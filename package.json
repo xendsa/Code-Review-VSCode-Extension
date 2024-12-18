@@ -1,0 +1,42 @@
+{
+  "name": "code-review-assistant",
+  "displayName": "Code Review Assistant",
+  "description": "This extension is made to help developer to get review of the code they are working on, so they could know about how good the code is, and get suggestion about the code they need repair or change so their code could be better than before.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:code-review-assistant.runReview"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "code-review-assistant.runReview",
+        "title": "Run Code Review"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.96.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "diff": "^7.0.0",
+    "dotenv": "^16.4.7",
+    "groq-sdk": "^0.9.1"
+  }
+}
