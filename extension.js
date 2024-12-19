@@ -2,8 +2,6 @@ const vscode = require('vscode');
 const { Groq } = require("groq-sdk");
 require('dotenv').config({ path: __dirname + '/.env' });
 
-console.log('GROQ_API_KEY:', process.env.GROQ_API_KEY); // Debug variabel
-
 function activate(context) {
     let disposable = vscode.commands.registerCommand('code-review-assistant.runReview', async () => {
         const editor = vscode.window.activeTextEditor;
@@ -12,14 +10,11 @@ function activate(context) {
             return;
         }
 
-        // Memeriksa apakah ada teks yang dipilih
         const selection = editor.selection;
         let code;
         if (selection.isEmpty) {
-            // Jika tidak ada teks yang dipilih, ambil seluruh dokumen
             code = editor.document.getText();
         } else {
-            // Jika ada teks yang dipilih, ambil hanya teks yang diseleksi
             code = editor.document.getText(selection);
         }
 
@@ -38,27 +33,25 @@ function activate(context) {
                 model: 'mixtral-8x7b-32768',
                 messages: [
                     { role: 'system', content: 'You are an expert code reviewer.' },
-                    { role: 'user', content: `Please review the following code:\n\n${code}` }, // Memperbaiki interpolasi string
+                    { role: 'user', content: `Please review the following code:\n\n${code}` },
                 ],
             });
 
             const reviewResult = response.choices[0]?.message?.content || 'No response received.';
 
-            // Membuat Webview untuk output
             const panel = vscode.window.createWebviewPanel(
-                'codeReview', // ID Webview
-                'Code Review Output', // Judul Tab
-                vscode.ViewColumn.One, // Lokasi Webview
-                { enableScripts: true } // Mengizinkan JavaScript di Webview
+                'codeReview',
+                'Code Review Output',
+                vscode.ViewColumn.One,
+                { enableScripts: true }
             );
 
-            // Konten HTML untuk Webview
             panel.webview.html = getWebviewContent(reviewResult, code);
 
             vscode.window.showInformationMessage('Code Review selesai! Lihat di tab output.');
         } catch (error) {
             console.error(error);
-            vscode.window.showErrorMessage(`Terjadi kesalahan: ${error.message}`); // Memperbaiki error handling
+            vscode.window.showErrorMessage(`Terjadi kesalahan: ${error.message}`);
         }
     });
 
@@ -66,6 +59,8 @@ function activate(context) {
 }
 
 function getWebviewContent(reviewResult, code) {
+    const { processedReview, suggestedCode } = processReviewText(reviewResult);
+
     return `
     <!DOCTYPE html>
     <html lang="en">
@@ -122,7 +117,6 @@ function getWebviewContent(reviewResult, code) {
                 background: #005a9e;
             }
             .notification {
-                display: none;
                 position: fixed;
                 bottom: 20px;
                 right: 20px;
@@ -130,49 +124,99 @@ function getWebviewContent(reviewResult, code) {
                 color: white;
                 padding: 10px 20px;
                 border-radius: 5px;
-                box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-                animation: fadeOut 3s forwards;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                font-size: 14px;
+                z-index: 1000;
+                animation: fadeInOut 3s ease-in-out;
             }
-            @keyframes fadeOut {
-                0% { opacity: 1; }
-                80% { opacity: 1; }
-                100% { opacity: 0; display: none; }
+            .notification.error {
+                background-color: #d32f2f;
+            }
+            @keyframes fadeInOut {
+                0% {
+                    opacity: 0;
+                    transform: translateY(20px);
+                }
+                10%, 90% {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+                100% {
+                    opacity: 0;
+                    transform: translateY(20px);
+                }
             }
         </style>
     </head>
     <body>
         <h1>Code Review Summary</h1>
-        
         <div class="review-box">
-            <p>${reviewResult.replace(/\n/g, '<br>')}</p>
+            ${processedReview}
         </div>
         
-        <h1>Original Code</h1>
-        
+        <h1>Suggested Code</h1>
         <div class="code-container">
-            <button class="copy-button" onclick="copyToClipboard()">Copy Code</button>
-            <div class="code-box" id="codeBlock">${code}</div>
+            <button class="copy-button" onclick="copyToClipboard('suggestedCode')">Copy Code</button>
+            <div class="code-box" id="suggestedCode">${suggestedCode}</div>
         </div>
 
-        <div class="notification" id="copyNotification">Code Copied!</div>
+        <h1>Original Code</h1>
+        <div class="code-container">
+            <button class="copy-button" onclick="copyToClipboard('originalCode')">Copy Code</button>
+            <div class="code-box" id="originalCode">${code}</div>
+        </div>
 
         <script>
-            function copyToClipboard() {
-                const codeBlock = document.getElementById('codeBlock').innerText;
+            function copyToClipboard(elementId) {
+                const codeBlock = document.getElementById(elementId).innerText;
                 navigator.clipboard.writeText(codeBlock).then(() => {
-                    const notification = document.getElementById('copyNotification');
-                    notification.style.display = 'block';
-                    setTimeout(() => {
-                        notification.style.display = 'none';
-                    }, 3000);
+                    showNotification('Code copied to clipboard!');
                 }, (err) => {
-                    alert('Gagal menyalin kode: ' + err);
+                    showNotification('Failed to copy code: ' + err, true);
                 });
+            }
+
+            function showNotification(message, isError = false) {
+                const notification = document.createElement('div');
+                notification.innerText = message;
+                notification.className = \`notification \${isError ? 'error' : 'success'}\`;
+
+                document.body.appendChild(notification);
+
+                // Remove the notification after 3 seconds
+                setTimeout(() => {
+                    document.body.removeChild(notification);
+                }, 3000);
             }
         </script>
     </body>
     </html>`;
 }
+
+
+function processReviewText(reviewText) {
+    const lines = reviewText.split('\n');
+    let processedReview = '';
+    let suggestedCode = '';
+    let inCodeBlock = false;
+
+    lines.forEach(line => {
+        if (line.startsWith('```')) {
+            inCodeBlock = !inCodeBlock;
+        } else if (inCodeBlock) {
+            suggestedCode += `${line}\n`;
+        } else {
+            processedReview += `${line}<br>`;
+        }
+    });
+
+    // Trim extra line breaks for cleaner output
+    processedReview = processedReview.trim();
+    suggestedCode = suggestedCode.trim();
+
+    return { processedReview, suggestedCode };
+}
+
 
 function deactivate() {}
 
