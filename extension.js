@@ -1,226 +1,466 @@
+// extension.js
 const vscode = require('vscode');
-const { Groq } = require("groq-sdk");
-require('dotenv').config({ path: __dirname + '/.env' });
+const { Groq } = require('groq-sdk');
+require('dotenv').config();
 
 function activate(context) {
-    let disposable = vscode.commands.registerCommand('code-review-assistant.runReview', async () => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            vscode.window.showErrorMessage('Tidak ada editor aktif!');
+  const disposable = vscode.commands.registerCommand('code-review-assistant.runReview', async () => {
+    const panel = vscode.window.createWebviewPanel(
+      'codeReview',
+      'Code Review Assistant',
+      vscode.ViewColumn.One,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+      }
+    );
+
+    const nonce = getNonce();
+    panel.webview.html = getWebviewContent(panel.webview, nonce);
+
+    // Handle messages from the webview
+    panel.webview.onDidReceiveMessage(async (message) => {
+      try {
+        if (message.command === 'runReview') {
+          const model = message.model;
+          const method = message.method;
+
+          // Get the active editor code
+          const editor = vscode.window.activeTextEditor;
+          if (!editor) {
+            panel.webview.postMessage({ command: 'error', text: 'Tidak ada editor aktif. Buka file yang ingin direview.' });
             return;
-        }
+          }
+          const selection = editor.selection;
+          const code = selection.isEmpty ? editor.document.getText() : editor.document.getText(selection);
 
-        const selection = editor.selection;
-        let code;
-        if (selection.isEmpty) {
-            code = editor.document.getText();
-        } else {
-            code = editor.document.getText(selection);
-        }
+          // Build prompt based on method
+          const prompt = buildPrompt(method, code);
 
-        const apiKey = process.env.GROQ_API_KEY;
-        if (!apiKey) {
-            vscode.window.showErrorMessage('API Key GROQ belum diatur di file .env');
+          // Read API key
+          const apiKey = process.env.GROQ_API_KEY;
+          if (!apiKey) {
+            panel.webview.postMessage({ command: 'error', text: 'GROQ_API_KEY belum diatur di .env' });
             return;
+          }
+
+          const groq = new Groq({ apiKey });
+
+          panel.webview.postMessage({ command: 'status', text: 'Mengirim kode ke API untuk direview...' });
+
+          // Call GROQ chat completion with chosen model
+          const response = await groq.chat.completions.create({
+            model: model || 'openai/gpt-oss-120b',
+            messages: [
+              { role: 'system', content: 'You are an expert code reviewer. Explain outputs in Bahasa Indonesia unless user asks otherwise.' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.1,
+            max_tokens: 2000,
+          });
+
+          const reviewResult = response.choices?.[0]?.message?.content || 'No response received from model.';
+          panel.webview.postMessage({ command: 'reviewResult', result: reviewResult, originalCode: code });
         }
+      } catch (err) {
+        console.error(err);
+        panel.webview.postMessage({ command: 'error', text: `Terjadi kesalahan: ${err.message || err}` });
+      }
+    }, undefined, context.subscriptions);
+  });
 
-        const groq = new Groq({ apiKey });
-
-        try {
-            vscode.window.showInformationMessage('Sending the code to review...');
-
-            const response = await groq.chat.completions.create({
-                model: 'mixtral-8x7b-32768',
-                messages: [
-                    { role: 'system', content: 'You are an expert code reviewer.' },
-                    { role: 'user', content: `Please review the following code:\n\n${code}` },
-                ],
-            });
-
-            const reviewResult = response.choices[0]?.message?.content || 'No response received.';
-
-            const panel = vscode.window.createWebviewPanel(
-                'codeReview',
-                'Code Review Output',
-                vscode.ViewColumn.One,
-                { enableScripts: true }
-            );
-
-            panel.webview.html = getWebviewContent(reviewResult, code);
-
-            vscode.window.showInformationMessage('Code Review selesai! Lihat di tab output.');
-        } catch (error) {
-            console.error(error);
-            vscode.window.showErrorMessage(`Terjadi kesalahan: ${error.message}`);
-        }
-    });
-
-    context.subscriptions.push(disposable);
+  context.subscriptions.push(disposable);
 }
-
-function getWebviewContent(reviewResult, code) {
-    const { processedReview, suggestedCode } = processReviewText(reviewResult);
-
-    return `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Code Review Output</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                padding: 10px;
-                line-height: 1.6;
-                color: #333;
-                background-color: #f5f5f5;
-            }
-            h1 {
-                color: #007acc;
-            }
-            .review-box {
-                margin-bottom: 20px;
-                padding: 15px;
-                background-color: #e8f5e9;
-                border-left: 4px solid #4caf50;
-                border-radius: 5px;
-                white-space: pre-wrap;
-            }
-            .code-container {
-                margin-top: 20px;
-                position: relative;
-                background: #1e1e1e;
-                color: #d4d4d4;
-                border-radius: 5px;
-                overflow-x: auto;
-                font-family: monospace;
-                padding: 15px;
-            }
-            .code-box {
-                white-space: pre-wrap;
-                margin: 0;
-            }
-            .copy-button {
-                position: absolute;
-                top: 10px;
-                right: 10px;
-                background: #007acc;
-                color: white;
-                border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            .copy-button:hover {
-                background: #005a9e;
-            }
-            .notification {
-                position: fixed;
-                bottom: 20px;
-                right: 20px;
-                background-color: #007acc;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 5px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                font-size: 14px;
-                z-index: 1000;
-                animation: fadeInOut 3s ease-in-out;
-            }
-            .notification.error {
-                background-color: #d32f2f;
-            }
-            @keyframes fadeInOut {
-                0% {
-                    opacity: 0;
-                    transform: translateY(20px);
-                }
-                10%, 90% {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-                100% {
-                    opacity: 0;
-                    transform: translateY(20px);
-                }
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Code Review Summary</h1>
-        <div class="review-box">
-            ${processedReview}
-        </div>
-        
-        <h1>Suggested Code</h1>
-        <div class="code-container">
-            <button class="copy-button" onclick="copyToClipboard('suggestedCode')">Copy Code</button>
-            <div class="code-box" id="suggestedCode">${suggestedCode}</div>
-        </div>
-
-        <h1>Original Code</h1>
-        <div class="code-container">
-            <button class="copy-button" onclick="copyToClipboard('originalCode')">Copy Code</button>
-            <div class="code-box" id="originalCode">${code}</div>
-        </div>
-
-        <script>
-            function copyToClipboard(elementId) {
-                const codeBlock = document.getElementById(elementId).innerText;
-                navigator.clipboard.writeText(codeBlock).then(() => {
-                    showNotification('Code copied to clipboard!');
-                }, (err) => {
-                    showNotification('Failed to copy code: ' + err, true);
-                });
-            }
-
-            function showNotification(message, isError = false) {
-                const notification = document.createElement('div');
-                notification.innerText = message;
-                notification.className = \`notification \${isError ? 'error' : 'success'}\`;
-
-                document.body.appendChild(notification);
-
-                // Remove the notification after 3 seconds
-                setTimeout(() => {
-                    document.body.removeChild(notification);
-                }, 3000);
-            }
-        </script>
-    </body>
-    </html>`;
-}
-
-
-function processReviewText(reviewText) {
-    const lines = reviewText.split('\n');
-    let processedReview = '';
-    let suggestedCode = '';
-    let inCodeBlock = false;
-
-    lines.forEach(line => {
-        if (line.startsWith('```')) {
-            inCodeBlock = !inCodeBlock;
-        } else if (inCodeBlock) {
-            suggestedCode += `${line}\n`;
-        } else {
-            processedReview += `${line}<br>`;
-        }
-    });
-
-    // Trim extra line breaks for cleaner output
-    processedReview = processedReview.trim();
-    suggestedCode = suggestedCode.trim();
-
-    return { processedReview, suggestedCode };
-}
-
 
 function deactivate() {}
 
+function buildPrompt(method, code) {
+  const header = `Please review the following code. Provide a short summary, list of issues (if any) with explanations, prioritization (High/Medium/Low), and suggested corrected code inside a fenced code block. Answer in Bahasa Indonesia.\n\n`;
+  let specifics = '';
+
+  switch ((method || '').toLowerCase()) {
+    case 'security':
+      specifics = 'Fokus pada potensi kerentanan keamanan (injection, unsafe deserialization, improper auth, insecure dependencies), rekomendasi mitigasi, dan contoh perbaikan.';
+      break;
+    case 'performance':
+      specifics = 'Fokus pada masalah performa: algoritma, kompleksitas, I/O blocking, memory leaks, dan rekomendasi optimasi.';
+      break;
+    case 'bug detection':
+      specifics = 'Cari bug potensial, edge case yang tidak tertangani, condition race, dan rekomendasi test yang relevan.';
+      break;
+    case 'documentation & readability':
+    case 'documentation':
+    case 'docs':
+      specifics = 'Fokus pada keterbacaan, penamaan, komentar, struktur fungsi, modularitas, dan saran perbaikan dokumentasi.';
+      break;
+    case 'clean code':
+    default:
+      specifics = 'Gunakan prinsip Clean Code: penamaan, single responsibility, ukuran fungsi, duplikasi, dan simple refactoring suggestions.';
+      break;
+  }
+
+  return `${header}Task: ${specifics}\n\n---\n\nCode:\n\n${code}\n\n---\n\nPlease provide the review following the requested format (Summary, Issues, Suggested Code).`;
+}
+
+function getWebviewContent(webview, nonce) {
+  const models = [
+    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS-120B (Default)' },
+    { id: 'llama/llama-3-70b', label: 'Llama-3-70B' },
+    { id: 'mixtral/mixtral-8x7b', label: 'Mixtral-8x7B' },
+    { id: 'llama/llama-3-8b', label: 'Llama-3-8B' }
+  ];
+
+  const methods = [
+    'Clean Code',
+    'Security',
+    'Performance',
+    'Bug Detection',
+    'Documentation'
+  ];
+
+  // Build options HTML
+  const modelOptions = models.map(m => `<option value="${m.id}">${m.label}</option>`).join('\n');
+  const methodOptions = methods.map(m => `<option value="${m}">${m}</option>`).join('\n');
+
+  // Cyber Dark Tech CSS + minimal layout
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src https: http: data:;">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Code Review Assistant</title>
+<style>
+  :root{
+    --bg:#0b0f14;
+    --panel:#0f1720;
+    --card:#0b1220;
+    --muted:#9aa5b1;
+    --accent:#00e6d3;
+    --accent2:#7c4dff;
+    --glow: 0 6px 20px rgba(124,77,255,0.12), 0 2px 6px rgba(0,230,211,0.06);
+    --radius:12px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace;
+  }
+
+  html,body{
+    height:100%;
+    margin:0;
+    background: radial-gradient(1200px 400px at 10% 10%, rgba(124,77,255,0.06), transparent 6%),
+                linear-gradient(180deg, rgba(2,6,23,1), rgba(8,12,18,1));
+    color: #e6eef6;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    -webkit-font-smoothing:antialiased;
+    padding:14px;
+  }
+
+  .header{
+    display:flex;
+    gap:12px;
+    align-items:center;
+    margin-bottom:14px;
+  }
+  .logo {
+    width:46px; height:46px; border-radius:10px;
+    background: linear-gradient(135deg,var(--accent2), var(--accent));
+    box-shadow: var(--glow);
+    display:flex; align-items:center; justify-content:center;
+    font-weight:700; color:#051018;
+  }
+  h1{ font-size:16px; margin:0; }
+  p.sub { margin:0; color:var(--muted); font-size:12px; }
+
+  .controls {
+    display:flex; gap:12px; align-items:center; margin-bottom:14px;
+  }
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: var(--radius);
+    padding:14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  }
+
+  select, button {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--accent);
+    padding:8px 10px;
+    border-radius:8px;
+    font-size:13px;
+    min-width:160px;
+    outline:none;
+  }
+
+  .btn-primary {
+    background: linear-gradient(90deg,var(--accent2),var(--accent));
+    color: #021018;
+    font-weight:600;
+    box-shadow: 0 6px 18px rgba(124,77,255,0.12);
+  }
+
+  .layout {
+    display:grid;
+    grid-template-columns: 1fr 420px;
+    gap:14px;
+    align-items:start;
+  }
+
+  .output {
+    background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
+    border-radius:10px;
+    padding:12px;
+    height: 66vh;
+    overflow:auto;
+    border: 1px solid rgba(255,255,255,0.03);
+    font-size:13px;
+  }
+
+  .panel-right {
+    min-height: 66vh;
+    padding:12px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+
+  .section-title { font-size:12px; color:var(--muted); margin-bottom:6px; }
+
+  pre.code {
+    background: linear-gradient(180deg, rgba(8,10,12,0.6), rgba(10,14,18,0.6));
+    padding:10px;
+    border-radius:8px;
+    overflow:auto;
+    font-family: var(--mono);
+    font-size:12px;
+    line-height:1.45;
+    border: 1px solid rgba(255,255,255,0.02);
+  }
+
+  .mini {
+    display:flex; gap:8px; align-items:center;
+  }
+
+  .notice {
+    color: var(--muted);
+    font-size:12px;
+    padding:8px;
+    border-radius:8px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
+    border: 1px solid rgba(255,255,255,0.02);
+  }
+
+  .actions { display:flex; gap:8px; align-items:center; }
+
+  .chip {
+    padding:6px 8px;
+    font-size:12px;
+    border-radius:999px;
+    border: 1px solid rgba(255,255,255,0.03);
+    color: var(--muted);
+    background: transparent;
+  }
+
+  .result-summary { margin-bottom:10px; }
+
+  .copy-btn {
+    padding:6px 8px;
+    border-radius:8px;
+    border: none;
+    cursor:pointer;
+    font-size:12px;
+  }
+
+  footer { margin-top:12px; color:var(--muted); font-size:12px; }
+
+  /* responsive */
+  @media (max-width:1000px) {
+    .layout { grid-template-columns: 1fr; }
+    .panel-right { order: 2; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">CRA</div>
+    <div>
+      <h1>Code Review Assistant</h1>
+      <p class="sub">Cyber Dark Tech • Pilih model & metode lalu tekan Run Review</p>
+    </div>
+  </div>
+
+  <div class="controls card">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div>
+        <div class="section-title">Model</div>
+        <select id="modelSelect">
+          ${modelOptions}
+        </select>
+      </div>
+
+      <div>
+        <div class="section-title">Method</div>
+        <select id="methodSelect">
+          ${methodOptions}
+        </select>
+      </div>
+
+      <div style="display:flex;align-items:center;">
+        <div style="margin-right:8px" class="section-title">Action</div>
+        <button id="runBtn" class="btn-primary">Run Review</button>
+      </div>
+
+      <div style="margin-left:auto" class="mini">
+        <div class="chip">Theme: Cyber Dark</div>
+        <div class="chip" id="statusChip">Idle</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="card output" id="output">
+      <div id="intro" class="notice">Hasil review akan tampil di sini. Gunakan selection di editor untuk mereview sebagian kode, atau buka file dan biarkan kosong untuk mereview seluruh file.</div>
+      <div id="resultArea"></div>
+    </div>
+
+    <div class="panel-right">
+      <div class="card">
+        <div class="section-title">Preview & Actions</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div>
+            <div class="section-title">Suggested Code</div>
+            <pre id="suggested" class="code">—</pre>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="copy-btn" id="copySuggested">Copy Suggested</button>
+              <button class="copy-btn" id="saveSuggested">Save as file</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-title">Original Code</div>
+            <pre id="original" class="code">—</pre>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="copy-btn" id="copyOriginal">Copy Original</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Tips</div>
+        <div style="color:var(--muted);font-size:13px">
+          • Pilih model sesuai kebutuhan (lebih besar -> lebih akurat & mahal).<br>
+          • Untuk review cepat pakai Llama-3-8B / Mixtral. Untuk analisis mendalam pakai Llama-3-70B / GPT-OSS-120B.<br>
+          • Jika hasil mengandung blok kode, akan otomatis diekstrak ke Suggested Code.
+        </div>
+        <footer>Built for your thesis — keep iterating 🔧</footer>
+      </div>
+    </div>
+  </div>
+
+<script nonce="${nonce}">
+  const vscode = acquireVsCodeApi();
+
+  const runBtn = document.getElementById('runBtn');
+  const modelSelect = document.getElementById('modelSelect');
+  const methodSelect = document.getElementById('methodSelect');
+  const statusChip = document.getElementById('statusChip');
+  const resultArea = document.getElementById('resultArea');
+  const suggested = document.getElementById('suggested');
+  const original = document.getElementById('original');
+  const copySuggested = document.getElementById('copySuggested');
+  const copyOriginal = document.getElementById('copyOriginal');
+  const saveSuggested = document.getElementById('saveSuggested');
+
+  runBtn.addEventListener('click', () => {
+    const model = modelSelect.value;
+    const method = methodSelect.value;
+    statusChip.innerText = 'Running...';
+    vscode.postMessage({ command: 'runReview', model, method });
+  });
+
+  copySuggested.addEventListener('click', () => {
+    navigator.clipboard.writeText(suggested.innerText).then(() => {
+      statusChip.innerText = 'Suggested copied';
+      setTimeout(()=> statusChip.innerText = 'Idle', 1500);
+    });
+  });
+
+  copyOriginal.addEventListener('click', () => {
+    navigator.clipboard.writeText(original.innerText).then(() => {
+      statusChip.innerText = 'Original copied';
+      setTimeout(()=> statusChip.innerText = 'Idle', 1500);
+    });
+  });
+
+  saveSuggested.addEventListener('click', () => {
+    vscode.postMessage({ command: 'saveSuggested', content: suggested.innerText || '' });
+  });
+
+  // When messages come from extension
+  window.addEventListener('message', event => {
+    const msg = event.data;
+    if (!msg) return;
+    switch(msg.command) {
+      case 'status':
+        statusChip.innerText = msg.text || '...';
+        break;
+      case 'error':
+        statusChip.innerText = 'Error';
+        resultArea.innerHTML = '<div style="color:#ff6b6b;margin-bottom:10px;">'+escapeHtml(msg.text)+'</div>';
+        break;
+      case 'reviewResult':
+        statusChip.innerText = 'Done';
+        renderResult(msg.result || '', msg.originalCode || '');
+        break;
+    }
+  });
+
+  function renderResult(raw, originalCode) {
+    resultArea.innerHTML = '';
+    // simple parse: split by triple backticks to find suggested code
+    const parts = raw.split(/\`\`\`/);
+    let summaryHtml = '';
+    let suggestedCode = '';
+    if (parts.length === 1) {
+      summaryHtml = '<div class="result-summary">'+escapeHtml(raw).replace(/^/gm,'')+'</div>';
+    } else {
+      // odd parts: 0 summary, 1 code, 2 remainder etc
+      summaryHtml = '<div class="result-summary">'+escapeHtml(parts[0]).replace(/\\n/g,'<br>')+'</div>';
+      // try to find the first code block that looks like code
+      for (let i=1;i<parts.length;i+=2){
+        suggestedCode = suggestedCode ? suggestedCode + '\\n\\n' + parts[i] : parts[i];
+      }
+    }
+
+    resultArea.innerHTML = summaryHtml;
+    suggested.innerText = suggestedCode.trim() || '—';
+    original.innerText = originalCode || '—';
+  }
+
+  // Escape util
+  function escapeHtml(unsafe) {
+    return unsafe
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  // send save request handler
+  window.addEventListener('message', () => {}); // noop to ensure handler exists
+
+</script>
+</body>
+</html>`;
+}
+
+// Utility: create a short nonce
+function getNonce() {
+  return (Math.random().toString(36).slice(2, 12));
+}
+
 module.exports = {
-    activate,
-    deactivate,
+  activate,
+  deactivate,
 };
