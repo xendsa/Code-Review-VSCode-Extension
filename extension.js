@@ -1,9 +1,18 @@
 // extension.js
 const vscode = require('vscode');
 const { Groq } = require('groq-sdk');
-require('dotenv').config();
+const { marked } = require('marked');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 function activate(context) {
+  let currentEditor = vscode.window.activeTextEditor;
+  vscode.window.onDidChangeActiveTextEditor(editor => {
+    if (editor) {
+      currentEditor = editor;
+    }
+  }, null, context.subscriptions);
+
   const disposable = vscode.commands.registerCommand('code-review-assistant.runReview', async () => {
     const panel = vscode.window.createWebviewPanel(
       'codeReview',
@@ -26,7 +35,7 @@ function activate(context) {
           const method = message.method;
 
           // Get the active editor code
-          const editor = vscode.window.activeTextEditor;
+          const editor = currentEditor || vscode.window.activeTextEditor;
           if (!editor) {
             panel.webview.postMessage({ command: 'error', text: 'Tidak ada editor aktif. Buka file yang ingin direview.' });
             return;
@@ -52,7 +61,7 @@ function activate(context) {
           const response = await groq.chat.completions.create({
             model: model || 'openai/gpt-oss-120b',
             messages: [
-              { role: 'system', content: 'You are an expert code reviewer. Explain outputs in Bahasa Indonesia unless user asks otherwise.' },
+              { role: 'system', content: 'You are an expert code reviewer. Always format your responses clearly using Markdown headers, numbered lists, and tables for high readability. Explain outputs in Bahasa Indonesia.' },
               { role: 'user', content: prompt },
             ],
             temperature: 0.1,
@@ -60,7 +69,22 @@ function activate(context) {
           });
 
           const reviewResult = response.choices?.[0]?.message?.content || 'No response received from model.';
-          panel.webview.postMessage({ command: 'reviewResult', result: reviewResult, originalCode: code });
+
+          let suggestedCode = '';
+          const codeBlockRegex = /```[\s\S]*?\n([\s\S]*?)```/;
+          const match = codeBlockRegex.exec(reviewResult);
+          if (match) {
+            suggestedCode = match[1].trim();
+          }
+
+          const reviewResultHtml = marked.parse(reviewResult);
+
+          panel.webview.postMessage({
+            command: 'reviewResult',
+            resultHtml: reviewResultHtml,
+            suggestedCode: suggestedCode,
+            originalCode: code
+          });
         }
       } catch (err) {
         console.error(err);
@@ -72,10 +96,10 @@ function activate(context) {
   context.subscriptions.push(disposable);
 }
 
-function deactivate() {}
+function deactivate() { }
 
 function buildPrompt(method, code) {
-  const header = `Please review the following code. Provide a short summary, list of issues (if any) with explanations, prioritization (High/Medium/Low), and suggested corrected code inside a fenced code block. Answer in Bahasa Indonesia.\n\n`;
+  const header = `Tolong review kode berikut ini. Berikan respons dalam format Markdown yang rapi dan terstruktur.\nPastikan kamu menggunakan:\n1. **Header** (misal: ## Ringkasan, ## Daftar Masalah, ## Saran Perbaikan)\n2. **Tabel** untuk menyajikan daftar masalah (disarankan format kolom: No, Masalah, Keparahan/Prioritas, Penjelasan Singkat).\n3. **Numbering / Bullet points** untuk detail penjelasan.\n4. **Blok kode** (fenced code block) untuk saran perbaikan kode.\n\nJawablah sepenuhnya dalam Bahasa Indonesia.\n\n`;
   let specifics = '';
 
   switch ((method || '').toLowerCase()) {
@@ -99,7 +123,7 @@ function buildPrompt(method, code) {
       break;
   }
 
-  return `${header}Task: ${specifics}\n\n---\n\nCode:\n\n${code}\n\n---\n\nPlease provide the review following the requested format (Summary, Issues, Suggested Code).`;
+  return `${header}Task: ${specifics}\n\n---\n\nCode:\n\n${code}\n\n---\n\nSilakan berikan review kode sesuai dengan struktur dan format yang diminta di atas (menggunakan Header, Tabel, List, dan Blok Kode).`;
 }
 
 function getWebviewContent(webview, nonce) {
@@ -278,6 +302,70 @@ function getWebviewContent(webview, nonce) {
     .layout { grid-template-columns: 1fr; }
     .panel-right { order: 2; }
   }
+
+  /* Markdown styles */
+  .output table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .output th, .output td {
+    padding: 8px 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+    text-align: left;
+  }
+  .output th {
+    background: rgba(255,255,255,0.03);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .output tbody tr:hover {
+    background: rgba(255,255,255,0.015);
+  }
+  .output ul, .output ol {
+    padding-left: 20px;
+    margin: 10px 0;
+  }
+  .output h1, .output h2, .output h3, .output h4 {
+    margin-top: 20px;
+    margin-bottom: 10px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .output code {
+    background: rgba(255,255,255,0.08);
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    color: #e6eef6;
+  }
+  .output pre {
+    background: linear-gradient(180deg, rgba(8,10,12,0.6), rgba(10,14,18,0.6)) !important;
+    padding: 12px !important;
+    border-radius: 8px !important;
+    border: 1px solid rgba(255,255,255,0.03) !important;
+    overflow-x: auto;
+  }
+  .output pre code {
+    background: transparent;
+    padding: 0;
+  }
+  .output blockquote {
+    border-left: 4px solid var(--accent);
+    margin: 12px 0;
+    padding: 6px 12px;
+    color: var(--muted);
+    background: rgba(255,255,255,0.01);
+    border-radius: 0 4px 4px 0;
+  }
+  .output a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .output a:hover {
+    text-decoration: underline;
+  }
 </style>
 </head>
 <body>
@@ -412,32 +500,12 @@ function getWebviewContent(webview, nonce) {
         break;
       case 'reviewResult':
         statusChip.innerText = 'Done';
-        renderResult(msg.result || '', msg.originalCode || '');
+        resultArea.innerHTML = msg.resultHtml || '';
+        suggested.innerText = msg.suggestedCode || '—';
+        original.innerText = msg.originalCode || '—';
         break;
     }
   });
-
-  function renderResult(raw, originalCode) {
-    resultArea.innerHTML = '';
-    // simple parse: split by triple backticks to find suggested code
-    const parts = raw.split(/\`\`\`/);
-    let summaryHtml = '';
-    let suggestedCode = '';
-    if (parts.length === 1) {
-      summaryHtml = '<div class="result-summary">'+escapeHtml(raw).replace(/^/gm,'')+'</div>';
-    } else {
-      // odd parts: 0 summary, 1 code, 2 remainder etc
-      summaryHtml = '<div class="result-summary">'+escapeHtml(parts[0]).replace(/\\n/g,'<br>')+'</div>';
-      // try to find the first code block that looks like code
-      for (let i=1;i<parts.length;i+=2){
-        suggestedCode = suggestedCode ? suggestedCode + '\\n\\n' + parts[i] : parts[i];
-      }
-    }
-
-    resultArea.innerHTML = summaryHtml;
-    suggested.innerText = suggestedCode.trim() || '—';
-    original.innerText = originalCode || '—';
-  }
 
   // Escape util
   function escapeHtml(unsafe) {
