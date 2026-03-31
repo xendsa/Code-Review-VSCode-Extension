@@ -128,10 +128,10 @@ function buildPrompt(method, code) {
 
 function getWebviewContent(webview, nonce) {
   const models = [
-    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS-120B (Default)' },
-    { id: 'llama/llama-3-70b', label: 'Llama-3-70B' },
-    { id: 'mixtral/mixtral-8x7b', label: 'Mixtral-8x7B' },
-    { id: 'llama/llama-3-8b', label: 'Llama-3-8B' }
+    { id: 'openai/gpt-oss-120b', label: 'Openai GPT OSS 120B-Best overall (Deep & accurate review)' },
+    { id: 'llama-3.1-8b-instant', label: 'Meta Llama 3.1 8B-Fast review (Quick response)' },
+    { id: 'llama-3.3-70b-versatile', label: 'Meta Llama 3.3 70B-Strong reasoning (Versatile coding)' },
+    { id: 'qwen/qwen3-32b', label: 'Qwen 3 32B-Coding focused (Fast & smart)' }
   ];
 
   const methods = [
@@ -436,13 +436,15 @@ function getWebviewContent(webview, nonce) {
       </div>
 
       <div class="card">
-        <div class="section-title">Tips</div>
-        <div style="color:var(--muted);font-size:13px">
-          • Pilih model sesuai kebutuhan (lebih besar -> lebih akurat & mahal).<br>
-          • Untuk review cepat pakai Llama-3-8B / Mixtral. Untuk analisis mendalam pakai Llama-3-70B / GPT-OSS-120B.<br>
-          • Jika hasil mengandung blok kode, akan otomatis diekstrak ke Suggested Code.
-        </div>
-        <footer>Built for your thesis — keep iterating 🔧</footer>
+          <div class="section-title">Tips</div>
+            <div style="color:var(--muted);font-size:13px">
+                • GPT-OSS-120B: paling akurat untuk review kompleks & detail (default).<br>
+                • Llama-3.3-70B: balanced, cocok untuk refactor + bug analysis.<br>
+                • Llama-3.1-8B: super cepat untuk review ringan & prompt singkat.<br>
+                • Qwen3-32B: spesialis coding, cocok untuk debugging & refactor (mid-tier).<br>
+                • Jika hasil mengandung blok kode, akan otomatis diekstrak ke Suggested Code.
+            </div>
+          <footer>Built for your thesis — keep iterating 🔧</footer>
       </div>
     </div>
   </div>
