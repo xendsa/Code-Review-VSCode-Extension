@@ -24,6 +24,9 @@ function activate(context) {
       }
     );
 
+    let messageHistory = [];
+    let currentCodeContext = '';
+
     const nonce = getNonce();
     panel.webview.html = getWebviewContent(panel.webview, nonce);
 
@@ -42,41 +45,21 @@ function activate(context) {
           }
           const selection = editor.selection;
           const code = selection.isEmpty ? editor.document.getText() : editor.document.getText(selection);
+          currentCodeContext = code;
 
-          // Build prompt based on method
+          // Build primary prompt
           const prompt = buildPrompt(method, code);
-
-          // Read API key
-          const apiKey = process.env.GROQ_API_KEY;
-          if (!apiKey) {
-            panel.webview.postMessage({ command: 'error', text: 'GROQ_API_KEY belum diatur di .env' });
-            return;
-          }
-
-          const groq = new Groq({ apiKey });
+          messageHistory = [
+            { role: 'system', content: 'You are an expert code reviewer. Always format your responses clearly using Markdown headers, numbered lists, and tables for high readability. Explain outputs in Bahasa Indonesia.' },
+            { role: 'user', content: prompt }
+          ];
 
           panel.webview.postMessage({ command: 'status', text: 'Mengirim kode ke API untuk direview...' });
 
-          // Call GROQ chat completion with chosen model
-          const response = await groq.chat.completions.create({
-            model: model || 'openai/gpt-oss-120b',
-            messages: [
-              { role: 'system', content: 'You are an expert code reviewer. Always format your responses clearly using Markdown headers, numbered lists, and tables for high readability. Explain outputs in Bahasa Indonesia.' },
-              { role: 'user', content: prompt },
-            ],
-            temperature: 0.1,
-            max_tokens: 2000,
-          });
+          const reviewResult = await getGroqCompletion(messageHistory, model);
+          messageHistory.push({ role: 'assistant', content: reviewResult });
 
-          const reviewResult = response.choices?.[0]?.message?.content || 'No response received from model.';
-
-          let suggestedCode = '';
-          const codeBlockRegex = /```[\s\S]*?\n([\s\S]*?)```/;
-          const match = codeBlockRegex.exec(reviewResult);
-          if (match) {
-            suggestedCode = match[1].trim();
-          }
-
+          let suggestedCode = extractCodeBlock(reviewResult);
           const reviewResultHtml = marked.parse(reviewResult);
 
           panel.webview.postMessage({
@@ -84,6 +67,26 @@ function activate(context) {
             resultHtml: reviewResultHtml,
             suggestedCode: suggestedCode,
             originalCode: code
+          });
+        }
+
+        if (message.command === 'chat') {
+          const userMsg = message.text;
+          const model = message.model;
+
+          messageHistory.push({ role: 'user', content: userMsg });
+          panel.webview.postMessage({ command: 'status', text: 'Si asisten sedang berpikir...' });
+
+          const chatResponse = await getGroqCompletion(messageHistory, model);
+          messageHistory.push({ role: 'assistant', content: chatResponse });
+
+          let suggestedCode = extractCodeBlock(chatResponse);
+          const chatResponseHtml = marked.parse(chatResponse);
+
+          panel.webview.postMessage({
+            command: 'chatResult',
+            resultHtml: chatResponseHtml,
+            suggestedCode: suggestedCode // update if new code block found
           });
         }
       } catch (err) {
@@ -97,6 +100,27 @@ function activate(context) {
 }
 
 function deactivate() { }
+
+async function getGroqCompletion(messages, model) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error('GROQ_API_KEY belum diatur di .env');
+  }
+  const groq = new Groq({ apiKey });
+  const response = await groq.chat.completions.create({
+    model: model || 'openai/gpt-oss-120b',
+    messages: messages,
+    temperature: 0.2,
+    max_tokens: 3000,
+  });
+  return response.choices?.[0]?.message?.content || 'No response received.';
+}
+
+function extractCodeBlock(text) {
+  const codeBlockRegex = /```[\s\S]*?\n([\s\S]*?)```/;
+  const match = codeBlockRegex.exec(text);
+  return match ? match[1].trim() : '';
+}
 
 function buildPrompt(method, code) {
   const header = `Tolong review kode berikut ini. Berikan respons dalam format Markdown yang rapi dan terstruktur.\nPastikan kamu menggunakan:\n1. **Header** (misal: ## Ringkasan, ## Daftar Masalah, ## Saran Perbaikan)\n2. **Tabel** untuk menyajikan daftar masalah (disarankan format kolom: No, Masalah, Keparahan/Prioritas, Penjelasan Singkat).\n3. **Numbering / Bullet points** untuk detail penjelasan.\n4. **Blok kode** (fenced code block) untuk saran perbaikan kode.\n\nJawablah sepenuhnya dalam Bahasa Indonesia.\n\n`;
@@ -233,11 +257,98 @@ function getWebviewContent(webview, nonce) {
   .output {
     background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
     border-radius:10px;
-    padding:12px;
+    padding:0;
     height: 66vh;
-    overflow:auto;
+    display:flex;
+    flex-direction:column;
     border: 1px solid rgba(255,255,255,0.03);
     font-size:13px;
+    overflow: hidden;
+  }
+
+  #chat-container {
+    flex:1;
+    overflow-y:auto;
+    padding:16px;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+    scroll-behavior: smooth;
+  }
+
+  .message {
+    max-width: 90%;
+    padding: 12px 16px;
+    border-radius: 12px;
+    line-height: 1.5;
+    position: relative;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .message-user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, var(--accent2), #512da8);
+    color: white;
+    border-bottom-right-radius: 2px;
+  }
+
+  .message-ai {
+    align-self: flex-start;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: #e6eef6;
+    border-bottom-left-radius: 2px;
+  }
+
+  .chat-input-area {
+    padding: 12px;
+    background: rgba(0,0,0,0.2);
+    border-top: 1px solid rgba(255,255,255,0.05);
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+
+  #userInput {
+    flex: 1;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    color: white;
+    padding: 10px;
+    font-size: 13px;
+    resize: none;
+    outline: none;
+    max-height: 150px;
+    font-family: inherit;
+  }
+
+  #userInput:focus {
+    border-color: var(--accent);
+  }
+
+  #sendBtn {
+    background: var(--accent);
+    color: #051018;
+    border: none;
+    padding: 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    min-width: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #sendBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .panel-right {
@@ -406,9 +517,14 @@ function getWebviewContent(webview, nonce) {
   </div>
 
   <div class="layout">
-    <div class="card output" id="output">
-      <div id="intro" class="notice">Hasil review akan tampil di sini. Gunakan selection di editor untuk mereview sebagian kode, atau buka file dan biarkan kosong untuk mereview seluruh file.</div>
-      <div id="resultArea"></div>
+    <div class="card output">
+      <div id="chat-container">
+        <div id="intro" class="notice">Hasil review akan tampil di sini. Gunakan selection di editor untuk mereview sebagian kode, atau buka file dan biarkan kosong untuk mereview seluruh file.</div>
+      </div>
+      <div class="chat-input-area" id="inputArea" style="display:none;">
+        <textarea id="userInput" placeholder="Tanyakan sesuatu tentang review ini..." rows="1"></textarea>
+        <button id="sendBtn">Send</button>
+      </div>
     </div>
 
     <div class="panel-right">
@@ -456,7 +572,6 @@ function getWebviewContent(webview, nonce) {
   const modelSelect = document.getElementById('modelSelect');
   const methodSelect = document.getElementById('methodSelect');
   const statusChip = document.getElementById('statusChip');
-  const resultArea = document.getElementById('resultArea');
   const suggested = document.getElementById('suggested');
   const original = document.getElementById('original');
   const copySuggested = document.getElementById('copySuggested');
@@ -498,15 +613,68 @@ function getWebviewContent(webview, nonce) {
         break;
       case 'error':
         statusChip.innerText = 'Error';
-        resultArea.innerHTML = '<div style="color:#ff6b6b;margin-bottom:10px;">'+escapeHtml(msg.text)+'</div>';
+        addMessage('ai', '<div style="color:#ff6b6b;">' + escapeHtml(msg.text) + '</div>');
         break;
       case 'reviewResult':
         statusChip.innerText = 'Done';
-        resultArea.innerHTML = msg.resultHtml || '';
+        const intro = document.getElementById('intro');
+        if(intro) intro.style.display = 'none';
+        
+        addMessage('ai', msg.resultHtml || '');
         suggested.innerText = msg.suggestedCode || '—';
         original.innerText = msg.originalCode || '—';
+        document.getElementById('inputArea').style.display = 'flex';
+        break;
+      case 'chatResult':
+        statusChip.innerText = 'Done';
+        addMessage('ai', msg.resultHtml || '');
+        if (msg.suggestedCode) {
+          suggested.innerText = msg.suggestedCode;
+        }
         break;
     }
+  });
+
+  const userInput = document.getElementById('userInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const chatContainer = document.getElementById('chat-container');
+
+  function addMessage(role, html) {
+    const div = document.createElement('div');
+    div.className = 'message message-' + role;
+    div.innerHTML = html;
+    chatContainer.appendChild(div);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  userInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  function sendMessage() {
+    const text = userInput.value.trim();
+    if (!text) return;
+
+    addMessage('user', escapeHtml(text));
+    userInput.value = '';
+    userInput.style.height = 'auto';
+    
+    statusChip.innerText = 'Sending...';
+    vscode.postMessage({ 
+      command: 'chat', 
+      text, 
+      model: modelSelect.value 
+    });
+  }
+
+  // Auto-resize textarea
+  userInput.addEventListener('input', () => {
+    userInput.style.height = 'auto';
+    userInput.style.height = (userInput.scrollHeight) + 'px';
   });
 
   // Escape util
